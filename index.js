@@ -9,6 +9,7 @@ import MongoStore from 'connect-mongo';
 import svgCaptcha from 'svg-captcha';
 import path from 'path';
 import { fileURLToPath } from 'url'; // Ensure this is at the top
+import cookieParser from 'cookie-parser';
 
 import Agent from './model/Agent.js';
 
@@ -29,6 +30,7 @@ mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('MongoDB connected'))
     .catch(err => console.error('Failed to connect to MongoDB', err));
 
+app.use(cookieParser());
 app.use(session({
     secret: process.env.SECRET_KEY, // Replace with your actual secret key
     resave: false,
@@ -78,12 +80,9 @@ app.get('/api/agent/captcha', (req, res) => {
     console.log("Generated CAPTCHA:", captcha.text); // Debug: Log the generated CAPTCHA text
 
     res.setHeader('Cache-Control', 'no-store');
-    //res.type('json');
-    //res.status(200).send({ data: captcha.data });
     res.setHeader('Content-Type', 'image/svg+xml');
     res.send(captcha.data);
 });
-
 
 // Register a new agent
 app.post('/api/agents/register', async(req, res) => {
@@ -109,7 +108,9 @@ app.post('/api/agents/register', async(req, res) => {
 
 // Login agent
 app.post('/api/agent/agentLogin', async(req, res) => {
-    const { agent_name, agent_pwd, agent_code, t } = req.body;
+    console.log("Received Payload:", req.body);
+
+    const { agent_name, login_name, agent_pwd, agent_code, t } = req.body;
 
     const sessionCaptchas = req.session.captchas || {};
 
@@ -117,17 +118,20 @@ app.post('/api/agent/agentLogin', async(req, res) => {
     console.log("Provided CAPTCHA:", agent_code);
     console.log("Provided t value:", t);
 
+    // Use login_name if provided, otherwise fall back to agent_name for backward compatibility
+    const loginName = login_name || agent_name;
+
     if (!sessionCaptchas[t] || agent_code !== sessionCaptchas[t]) {
         console.log('Invalid CAPTCHA');
         return res.status(400).json({ code: 400, message: 'Invalid CAPTCHA' });
     }
 
     try {
-        console.log("Attempting to find agent:", agent_name);
-        const agent = await Agent.findOne({ agent_name });
+        console.log("Attempting to find agent:", loginName);
+        const agent = await Agent.findOne({ login_name: loginName });
 
         if (!agent) {
-            console.log("No agent found for login_name:", agent_name);
+            console.log("No agent found for login_name:", loginName);
             return res.status(401).json({ code: 401, message: "Login failed, user not found." });
         }
 
@@ -139,11 +143,18 @@ app.post('/api/agent/agentLogin', async(req, res) => {
         console.log("Password match result:", isMatch);
 
         if (!isMatch) {
-            console.log("Password comparison failed for:", agent_name);
+            console.log("Password comparison failed for:", loginName);
             return res.status(401).json({ code: 401, message: "Invalid credentials" });
         }
 
         const token = jwt.sign({ agent_id: agent._id }, process.env.SECRET_KEY, { expiresIn: '1h' });
+
+        // Update last login details
+        agent.last_login_time = new Date();
+        agent.last_login_ip = req.ip;
+        agent.login_times += 1; // Increment login times
+        await agent.save();
+
         const response = {
             code: 200,
             msg: "success",
@@ -154,31 +165,29 @@ app.post('/api/agent/agentLogin', async(req, res) => {
                 phone: agent.phone ? agent.phone.toString() : null,
                 real_name: agent.real_name,
                 role_level: agent.level,
-                last_login_time: new Date().toISOString(),
-                last_logon_time: new Date().toISOString(),
-                last_login_ip: req.ip,
-                last_logon_ip: req.ip,
-                login_times: 15,
-                recharge_permission: 1,
-                redeem_permission: 1,
-                ragents: "24132,41265,41263,1,0",
-                is_test: 0,
-                is_authorised: 0,
-                secret_key: process.env.SECRET_KEY,
-                expires_time: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+                last_login_time: agent.last_login_time,
+                last_logon_time: agent.last_logon_time,
+                last_login_ip: agent.last_login_ip,
+                last_logon_ip: agent.last_logon_ip,
+                login_times: agent.login_times,
+                recharge_permission: agent.recharge_permission,
+                redeem_permission: agent.redeem_permission,
+                ragents: agent.ragents,
+                is_test: agent.is_test,
+                is_authorised: agent.is_authorised,
+                secret_key: agent.secret_key,
+                expires_time: agent.expires_time,
                 token: token,
-                role: "SUBDISTRIBUTOR"
+                role: agent.role
             }
         };
+        res.cookie('token', token, { httpOnly: true });
         res.json(response);
     } catch (error) {
         console.error("Error during login process:", error.message);
         res.status(500).json({ code: 500, message: error.message });
     }
 });
-
-
-
 
 // Middleware to authenticate JWT
 function authenticateToken(req, res, next) {
@@ -194,7 +203,7 @@ function authenticateToken(req, res, next) {
 }
 
 // A protected route to check balance
-app.get('/api/agent/balance', authenticateToken, async(req, res) => {
+app.post('/api/agent/balance', authenticateToken, async(req, res) => {
     try {
         const agent = await Agent.findById(req.user.agent_id);
         if (!agent) {
@@ -222,6 +231,11 @@ app.put('/api/agents/balance', authenticateToken, async(req, res) => {
         console.error("Error updating balance:", error.message);
         res.status(500).json({ message: error.message });
     }
+});
+
+// Serve HomeDetail.html
+app.get('/HomeDetail', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'HomeDetail.html'));
 });
 
 const port = process.env.PORT || 3000;
