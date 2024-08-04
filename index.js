@@ -54,6 +54,11 @@ app.get(['/', '/login'], (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
+// Route for serving the HomeDetail page
+app.get('/HomeDetail', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'HomeDetail.html'));
+});
+
 // Middleware to log session
 app.use((req, res, next) => {
     console.log('Session ID:', req.sessionID); // Log the session ID
@@ -209,7 +214,13 @@ app.post('/api/agent/balance', authenticateToken, async(req, res) => {
         if (!agent) {
             return res.status(404).json({ message: "Agent not found" });
         }
-        res.json({ balance: agent.balance });
+        const response = {
+            code: 200,
+            msg: "success",
+            data: { t: agent.balance },
+            count: 0
+        };
+        res.json(response);
     } catch (error) {
         console.error("Error fetching balance:", error.message);
         res.status(500).json({ message: error.message });
